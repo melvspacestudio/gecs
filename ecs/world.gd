@@ -376,7 +376,7 @@ func add_entity(entity: Entity, components = null, add_to_tree = true) -> void:
 	# Stabilize target IDs before archetype key/signature generation so entities
 	# with pre-registered relationship targets don't get stale entity#0 slot keys.
 	for relationship in entity.relationships:
-		if relationship.target is Entity:
+		if is_instance_valid(relationship.target) and relationship.target is Entity:
 			_ensure_entity_ecs_id(relationship.target)
 
 	# ID will auto-generate in _enter_tree if empty, or via property getter on first access
@@ -456,15 +456,16 @@ func add_entities(_entities: Array, components = null):
 ## 1. Entity signals are disconnected first to prevent re-entrancy during observer callbacks.[br]
 ## 2. Observers with [code].on_removed()[/code] fire via [method Observer.each] for each component — entity is still valid.[br]
 ## 3. Entity is removed from the entity list and archetype.[br]
-## 4. [method Entity.on_destroy] is called, then [code]queue_free[/code].[br]
+## 4. [method Entity.on_destroy] is called, then the entity is freed unless [param free_entity] is false.[br]
 ## [br]
 ## [b]Observer callback safety:[/b] It is safe to read [param entity] state inside a REMOVED callback.[br]
 ## The order in which components trigger the REMOVED event is unspecified.[br]
 ## [br]
 ## [param entity] The [Entity] to remove.[br]
+## [param free_entity] Disable when Godot is already deleting the entity; unregisters without freeing it again.[br]
 ## [b]Example:[/b]
 ##      [codeblock]world.remove_entity(player_entity)[/codeblock]
-func remove_entity(entity: Entity) -> void:
+func remove_entity(entity: Entity, free_entity: bool = true) -> void:
 	if not is_instance_valid(entity):
 		return
 	entity = entity as Entity
@@ -527,10 +528,11 @@ func remove_entity(entity: Entity) -> void:
 
 	# Destroy entity normally
 	entity.on_destroy()
-	if entity.is_inside_tree():
-		entity.queue_free()
-	else:
-		entity.free()
+	if free_entity:
+		if entity.is_inside_tree():
+			entity.queue_free()
+		else:
+			entity.free()
 
 
 ## Removes an Array of [Entity] from the world.[br]
@@ -951,6 +953,9 @@ func _on_entity_relationship_removed(entity: Entity, relationship: Relationship)
 			var slot_key = _relationship_slot_key(relationship)
 			if slot_key != "":
 				_move_entity_to_new_archetype_fast(entity, old_archetype, slot_key, false)
+			else:
+				# A freed external target no longer exposes its slot ID. Rebuild from live edges.
+				_move_entity_to_new_archetype_fast(entity, old_archetype, null, false)
 			_invalidate_cache("entity_relationship_removed")
 
 	relationship_removed.emit(entity, relationship)
@@ -2214,7 +2219,7 @@ func _calculate_entity_signature(entity: Entity) -> int:
 	# Property-query relationships are excluded (they remain post-filter only)
 	var structural_rels: Array = []
 	for rel in entity.relationships:
-		if not rel._is_query_relationship and _get_relationship_relation_path(rel) != "":
+		if rel.valid() and not rel._is_query_relationship and _get_relationship_relation_path(rel) != "":
 			structural_rels.append(rel)
 
 	# Use the SAME hash function as queries - entity is just "all components, no any/exclude"
@@ -2257,6 +2262,9 @@ func _relationship_slot_key(rel: Relationship) -> String:
 
 
 func _relationship_slot_key_from_parts(rel_path: String, target: Variant) -> String:
+	if typeof(target) == TYPE_OBJECT and not is_instance_valid(target):
+		return ""
+
 	var target_key: String
 	if target is Entity:
 		target_key = "entity#" + str(_ensure_entity_ecs_id(target))
@@ -2296,7 +2304,7 @@ func _get_compatible_relationship_slot_keys(rel: Relationship) -> Array:
 func _get_entity_archetype_keys(entity: Entity) -> Array:
 	var keys = entity.components.keys().duplicate()
 	for rel in entity.relationships:
-		if not rel._is_query_relationship:
+		if rel.valid() and not rel._is_query_relationship:
 			var slot_key = _relationship_slot_key(rel)
 			if slot_key != "":
 				keys.append(slot_key)
@@ -2443,10 +2451,10 @@ func _move_entity_to_new_archetype_fast(
 	# Try to use archetype edge for O(1) transition
 	var new_archetype: Archetype = null
 
-	if is_add:
+	if comp_key != null and is_add:
 		# Check if we have a cached edge for this component addition
 		new_archetype = old_archetype.get_add_edge(comp_key)
-	else:
+	elif comp_key != null:
 		# Check if we have a cached edge for this component removal
 		new_archetype = old_archetype.get_remove_edge(comp_key)
 
@@ -2469,7 +2477,7 @@ func _move_entity_to_new_archetype_fast(
 		# Only cache edges when source and target differ — self-referencing edges
 		# arise during _initialize() (clear + re-add same components) and cause
 		# subsequent remove_component to "move" the entity back to the same archetype.
-		if new_archetype != old_archetype:
+		if comp_key != null and new_archetype != old_archetype:
 			if is_add:
 				old_archetype.set_add_edge(comp_key, new_archetype)
 				new_archetype.set_remove_edge(comp_key, old_archetype)
