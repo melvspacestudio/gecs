@@ -44,6 +44,8 @@ signal relationship_removed(entity: Entity, relationship: Relationship)
 signal relationships_batch_added(entity: Entity, _relationships: Array)
 ## Emitted when multiple [Relationship]s are removed in a batch via [method remove_relationships]
 signal relationships_batch_removed(entity: Entity, _relationships: Array)
+## Emitted while the entity is still valid, before Godot frees it. Tree movement does not emit it.
+signal deleting(entity: Entity)
 
 #endregion Signals
 
@@ -99,6 +101,11 @@ var ecs_id: int = 0
 #endregion Public Variables
 
 #region Built-in Virtual Methods
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		deleting.emit(self)
 
 
 ## Called to initialize the entity and its components.

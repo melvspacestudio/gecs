@@ -237,6 +237,9 @@ func matches(other: Relationship) -> bool:
 
 
 func valid() -> bool:
+	if typeof(target) == TYPE_OBJECT and not is_instance_valid(target):
+		return false
+
 	# make sure the target is valid or null
 	var target_valid = false
 	if target == null:
